@@ -68,7 +68,7 @@ public class ThrottleQueueTaskDispatcher extends QueueTaskDispatcher {
         }
 
         if (tjp!=null && tjp.getThrottleEnabled()) {
-            CauseOfBlockage cause = canRunImpl(task, tjp);
+            CauseOfBlockage cause = canRunImpl(null, task, tjp);
             if (cause != null) {
             	return cause;
             }
@@ -127,10 +127,10 @@ public class ThrottleQueueTaskDispatcher extends QueueTaskDispatcher {
     public CauseOfBlockage canRun(Queue.Item item) {
         ThrottleJobProperty tjp = getThrottleJobProperty(item.task);
         if (tjp!=null && tjp.getThrottleEnabled()) {
-            if (tjp.isLimitOneJobWithMatchingParams() && isAnotherBuildWithSameParametersRunningOnAnyNode(item)) {
+            if (tjp.isLimitOneJobWithMatchingParams() && isAnotherBuildWithSameParametersRunningOnAnyNode(item, item.task)) {
                 return CauseOfBlockage.fromMessage(Messages._ThrottleQueueTaskDispatcher_OnlyOneWithMatchingParameters());
             }
-            return canRun(item.task, tjp);
+            return canRun(item, item.task, tjp);
         }
         return null;
     }
@@ -169,9 +169,9 @@ public class ThrottleQueueTaskDispatcher extends QueueTaskDispatcher {
        return true;
     }
 
-    public CauseOfBlockage canRun(Task task, ThrottleJobProperty tjp) {
+    public CauseOfBlockage canRun(Queue.Item item, Task task, ThrottleJobProperty tjp) {
         if (Jenkins.getAuthentication() == ACL.SYSTEM) {
-            return canRunImpl(task, tjp);
+            return canRunImpl(item, task, tjp);
         }
         
         // Throttle-concurrent-builds requires READ permissions for all projects.
@@ -181,13 +181,13 @@ public class ThrottleQueueTaskDispatcher extends QueueTaskDispatcher {
         SecurityContextHolder.setContext(auth);
         
         try {
-            return canRunImpl(task, tjp);
+            return canRunImpl(item, task, tjp);
         } finally {
             SecurityContextHolder.setContext(orig);
         }
     }
     
-    private CauseOfBlockage canRunImpl(Task task, ThrottleJobProperty tjp) {
+    private CauseOfBlockage canRunImpl(Queue.Item item, Task task, ThrottleJobProperty tjp) {
         final Jenkins jenkins = Jenkins.getActiveInstance();
         if (!shouldBeThrottled(task, tjp)) {
             return null;
@@ -226,11 +226,20 @@ public class ThrottleQueueTaskDispatcher extends QueueTaskDispatcher {
                                     if (jenkins.getQueue().isPending(catTask)) {
                                         return CauseOfBlockage.fromMessage(Messages._ThrottleQueueTaskDispatcher_BuildPending());
                                     }
+
                                     totalRunCount += buildsOfProjectOnAllNodes(catTask);
                                 }
 
                                 if (totalRunCount >= maxConcurrentTotal) {
                                     return CauseOfBlockage.fromMessage(Messages._ThrottleQueueTaskDispatcher_MaxCapacityTotal(totalRunCount));
+                                }
+                            }
+                            if (tjp.isLimitOneJobWithMatchingParams() && item != null) {
+                                for (Task catTask : categoryTasks) {
+                                    // check limit one job with matching params
+                                    if (isAnotherBuildWithSameParametersRunningOnAnyNode(item, catTask)) {
+                                        return CauseOfBlockage.fromMessage(Messages._ThrottleQueueTaskDispatcher_OnlyOneWithMatchingParameters());
+                                    } 
                                 }
                             }
 
@@ -243,21 +252,21 @@ public class ThrottleQueueTaskDispatcher extends QueueTaskDispatcher {
         return null;
     }
 
-    private boolean isAnotherBuildWithSameParametersRunningOnAnyNode(Queue.Item item) {
+    private boolean isAnotherBuildWithSameParametersRunningOnAnyNode(Queue.Item item, Task targetTask) {
         final Jenkins jenkins = Jenkins.getActiveInstance();
-        if (isAnotherBuildWithSameParametersRunningOnNode(jenkins, item)) {
+        if (isAnotherBuildWithSameParametersRunningOnNode(jenkins, item, targetTask)) {
             return true;
         }
 
         for (Node node : jenkins.getNodes()) {
-            if (isAnotherBuildWithSameParametersRunningOnNode(node, item)) {
+            if (isAnotherBuildWithSameParametersRunningOnNode(node, item, targetTask)) {
                 return true;
             }
         }
         return false;
     }
 
-    private boolean isAnotherBuildWithSameParametersRunningOnNode(Node node, Queue.Item item) {
+    private boolean isAnotherBuildWithSameParametersRunningOnNode(Node node, Queue.Item item, Task targetTask) {
         ThrottleJobProperty tjp = getThrottleJobProperty(item.task);
         if (tjp == null) {
             // If the property has been ocasionally deleted by this call, 
@@ -274,13 +283,13 @@ public class ThrottleQueueTaskDispatcher extends QueueTaskDispatcher {
 
         if (computer != null) {
             for (Executor exec : computer.getExecutors()) {
-                if (item != null && item.task != null) {
+                if (item != null && item.task != null && targetTask != null) {
                     // TODO: refactor into a nameEquals helper method
                     final Queue.Executable currentExecutable = exec.getCurrentExecutable();
                     final SubTask parentTask = currentExecutable != null ? currentExecutable.getParent() : null;
                     if (currentExecutable != null && parentTask != null &&
                             parentTask.getOwnerTask() != null &&
-                            parentTask.getOwnerTask().getName().equals(item.task.getName())) {
+                            parentTask.getOwnerTask().getName().equals(targetTask.getName())) {
                         List<ParameterValue> executingUnitParams = getParametersFromWorkUnit(exec.getCurrentWorkUnit());
                         executingUnitParams = doFilterParams(paramsToCompare, executingUnitParams);
 
