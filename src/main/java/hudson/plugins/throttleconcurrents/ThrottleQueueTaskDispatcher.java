@@ -85,6 +85,20 @@ public class ThrottleQueueTaskDispatcher extends QueueTaskDispatcher {
                 }
             }
             else if (tjp.getThrottleOption().equals("category")) {
+
+                // 因为目前按照 category 进行 throttle 时会比较 parameters 是否一致
+                // 所以会出现一个 job 的 maxBuildsPerNode 不会生效（因为参数一样），所以在 category 中也需要
+                // 再处理 maxPerNode 的情况
+                if (tjp.getMaxConcurrentPerNode().intValue() > 0) {
+                    int maxConcurrentPerNode = tjp.getMaxConcurrentPerNode().intValue();
+                    int runCount = buildsOfProjectOnNode(node, task);
+
+                    // This would mean that there are as many or more builds currently running than are allowed.
+                    if (runCount >= maxConcurrentPerNode) {
+                        return CauseOfBlockage.fromMessage(Messages._ThrottleQueueTaskDispatcher_MaxCapacityOnNode(runCount));
+                    }
+                }
+
                 // If the project is in one or more categories...
                 if (tjp.getCategories() != null && !tjp.getCategories().isEmpty()) {
                     for (String catNm : tjp.getCategories()) {
@@ -236,6 +250,11 @@ public class ThrottleQueueTaskDispatcher extends QueueTaskDispatcher {
                             }
                             if (tjp.isLimitOneJobWithMatchingParams() && item != null) {
                                 for (Task catTask : categoryTasks) {
+
+                                    if (jenkins.getQueue().isPending(catTask)) {
+                                        return CauseOfBlockage.fromMessage(Messages._ThrottleQueueTaskDispatcher_BuildPending());
+                                    }
+
                                     // check limit one job with matching params
                                     if (isAnotherBuildWithSameParametersRunningOnAnyNode(item, catTask)) {
                                         return CauseOfBlockage.fromMessage(Messages._ThrottleQueueTaskDispatcher_OnlyOneWithMatchingParameters());
